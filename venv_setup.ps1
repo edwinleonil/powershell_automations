@@ -5,7 +5,7 @@
     Creates a Python virtual environment with VS Code integration.
 
 .DESCRIPTION
-    This script creates a Python virtual environment using either pyenv (if available) 
+    This script creates a Python virtual environment using either the pyenv tool (if available) 
     or the system Python. It sets up VS Code settings and provides a robust, 
     user-friendly experience with comprehensive error handling.
 
@@ -21,7 +21,7 @@ param(
     [switch]$Force
 )
 
-# Set strict mode for better error handling
+# Set strict mode for better error handling 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = "Stop"
 
