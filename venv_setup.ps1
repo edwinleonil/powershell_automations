@@ -70,6 +70,10 @@ function Invoke-SafeCommand {
 
 # Function to get Python executable
 function Get-PythonExecutable {
+    $allInstalledVersions = @()
+    $allVersionDetails = @{}
+    $sourceCounter = 1
+    
     # Try py launcher first (Windows)
     if (Get-Command py -ErrorAction SilentlyContinue) {
         Write-Info "Found Python Launcher. Getting available Python versions..."
@@ -86,91 +90,90 @@ function Get-PythonExecutable {
                     $pyOutput = py --list 2>&1
                     Write-Host "Using 'py --list' for version discovery..." -ForegroundColor Gray
                 } catch {
-                    throw "Both 'py -0' and 'py --list' failed"
+                    Write-Warning "Both 'py -0' and 'py --list' failed"
+                    $pyOutput = $null
                 }
             }
             
-            $installedVersions = @()
-            $versionDetails = @{}
-            
-            foreach ($line in $pyOutput) {
-                # Parse py -0 output (format: " -3.11-64          C:\Python311\python.exe *")
-                # Parse py --list output (format: " -3.11-64 *" or " -3.10-64")
-                if ($line -match '^\s*-([0-9]+\.[0-9]+)(?:-(\d+))?\s*(.*)') {
-                    $version = $matches[1]
-                    $architecture = if ($matches[2]) { $matches[2] } else { "64" }
-                    $pathAndDefault = $matches[3].Trim()
-                    $isDefault = $pathAndDefault -match '\*'
-                    
-                    # Extract path if available (from py -0)
-                    $pythonPath = ""
-                    if ($pathAndDefault -match '([A-Z]:\\[^*]+\.exe)') {
-                        $pythonPath = $matches[1].Trim()
+            if ($pyOutput) {
+                $installedVersions = @()
+                $versionDetails = @{}
+
+                # Ensure $pyOutput is always an array of lines
+                if ($pyOutput -is [string]) {
+                    $pyOutput = $pyOutput -split "`r?`n"
+                }
+
+                foreach ($line in $pyOutput) {
+                    # Parse py -0 output - handle both old and new formats
+                    # New format: " -V:3.13          Python 3.13 (64-bit)"
+                    # Old format: " -3.11-64          C:\Python311\python.exe *"
+                    # Active venv: "  *               Active venv"
+
+                    # Skip active venv line
+                    if ($line -match '^\s*\*\s+Active venv') {
+                        continue
                     }
-                    
-                    $versionKey = "$version-$architecture"
-                    if ($installedVersions -notcontains $versionKey) {
-                        $installedVersions += $versionKey
-                        $versionDetails[$versionKey] = @{
-                            Version = $version
-                            Architecture = $architecture
-                            Path = $pythonPath
-                            IsDefault = $isDefault
-                            Command = "py -$version"
+
+                    # First try new format with -V: prefix
+                    if ($line -match '^\s*-V:([0-9]+\.[0-9]+)\s*(\*)?\s*Python\s+[0-9.]+\s+\((\d+)-bit\)\s*(\*?)') {
+                        $version = $matches[1]
+                        $architecture = $matches[3]
+                        $isDefault = ($matches[2] -eq '*') -or ($matches[4] -eq '*')  # Check both positions for *
+                        $pythonPath = ""
+
+                        $versionKey = "py-$version-$architecture"
+                        if ($installedVersions -notcontains $versionKey) {
+                            $installedVersions += $versionKey
+                            $versionDetails[$versionKey] = @{
+                                Version = $version
+                                Architecture = $architecture
+                                Path = $pythonPath
+                                IsDefault = $isDefault
+                                Command = "py -$version"
+                                Source = "Python Launcher"
+                            }
+                        }
+                    }
+                    # Then try old format for backwards compatibility
+                    elseif ($line -match '^\s*-([0-9]+\.[0-9]+)(?:-(\d+))?\s*(.*)') {
+                        $version = $matches[1]
+                        $architecture = if ($matches[2]) { $matches[2] } else { "64" }
+                        $pathAndDefault = $matches[3].Trim()
+                        $isDefault = $pathAndDefault -match '\*'
+
+                        # Extract path if available (from py -0)
+                        $pythonPath = ""
+                        if ($pathAndDefault -match '([A-Z]:\\[^*]+\.exe)') {
+                            $pythonPath = $matches[1].Trim()
+                        }
+
+                        $versionKey = "py-$version-$architecture"
+                        if ($installedVersions -notcontains $versionKey) {
+                            $installedVersions += $versionKey
+                            $versionDetails[$versionKey] = @{
+                                Version = $version
+                                Architecture = $architecture
+                                Path = $pythonPath
+                                IsDefault = $isDefault
+                                Command = "py -$version"
+                                Source = "Python Launcher"
+                            }
                         }
                     }
                 }
-            }
-            
-            # Sort versions (newest first, then by architecture)
-            $installedVersions = $installedVersions | Sort-Object {
-                $parts = $_ -split '-'
-                $versionParts = $parts[0] -split '\.'
-                $majorMinor = [int]$versionParts[0] * 100 + [int]$versionParts[1]
-                $arch = [int]$parts[1]
-                -$majorMinor * 1000 - $arch  # Negative for descending sort
-            }
-            
-            if ($installedVersions.Count -eq 0) {
-                Write-Warning "No Python versions found via py launcher. Trying pyenv..."
-            } else {
-                Write-Host "`nAvailable Python versions (via py launcher):"
-                for ($i = 0; $i -lt $installedVersions.Count; $i++) {
-                    $versionKey = $installedVersions[$i]
-                    $details = $versionDetails[$versionKey]
-                    $defaultMarker = if ($details.IsDefault) { " (default)" } else { "" }
-                    $pathInfo = if ($details.Path) { " - $($details.Path)" } else { "" }
-                    Write-Host "[$($i + 1)] Python $($details.Version) ($($details.Architecture)-bit)$defaultMarker$pathInfo"
+
+                # Add py launcher versions to combined list
+                foreach ($versionKey in $installedVersions) {
+                    $allInstalledVersions += $versionKey
+                    $allVersionDetails[$versionKey] = $versionDetails[$versionKey]
                 }
                 
-                do {
-                    $selection = Read-Host "`nSelect Python version (1-$($installedVersions.Count)) or press Enter for default"
-                    
-                    if ([string]::IsNullOrWhiteSpace($selection)) {
-                        # Find default version or use first
-                        $defaultVersion = $installedVersions | Where-Object { $versionDetails[$_].IsDefault } | Select-Object -First 1
-                        $selectedVersionKey = if ($defaultVersion) { $defaultVersion } else { $installedVersions[0] }
-                        break
-                    }
-                    
-                    if ($selection -match '^\d+$') {
-                        $selectionNum = [int]$selection
-                        if (($selectionNum -ge 1) -and ($selectionNum -le $installedVersions.Count)) {
-                            $selectedVersionKey = $installedVersions[$selection - 1]
-                            break
-                        }
-                    }
-                    
-                    Write-Warning "Invalid selection. Please enter a number between 1 and $($installedVersions.Count)."
-                } while ($true)
-                
-                $selectedDetails = $versionDetails[$selectedVersionKey]
-                Write-Info "Using Python $($selectedDetails.Version) ($($selectedDetails.Architecture)-bit)"
-                return $selectedDetails.Command
+                Write-Info "Found $($installedVersions.Count) Python version(s) via Python Launcher"
             }
         }
         catch {
-            Write-Warning "Error with py launcher: $_. Trying pyenv..."
+            Write-Warning "Error with py launcher: $_"
         }
     }
 
@@ -179,57 +182,105 @@ function Get-PythonExecutable {
         Write-Info "Found pyenv. Getting available Python versions..."
         
         try {
-            $allVersions = pyenv versions --bare
+            # Test if pyenv is working properly by checking for common Windows Script Host errors
+            $pyenvTest = pyenv versions --bare 2>&1
+            $pyenvOutput = $pyenvTest | Out-String
+            
+            # Check for cscript errors or other Windows Script Host issues
+            if ($pyenvOutput -match 'cscript.*is not recognized' -or $pyenvOutput -match 'Windows Script Host' -or $LASTEXITCODE -ne 0) {
+                throw "pyenv appears to be misconfigured (Windows Script Host issue)"
+            }
+            
+            $allVersions = $pyenvTest
             $installedVersions = @()
             foreach ($version in $allVersions) {
-                if (($version -notlike "*system*") -and ($version -notlike "*envs/*")) {
-                    $installedVersions += $version
+                if (($version -notlike "*system*") -and ($version -notlike "*envs/*") -and ($version -notlike "*cscript*") -and ($version.Trim() -ne "")) {
+                    $cleanVersion = $version.Trim()
+                    $versionKey = "pyenv-$cleanVersion"
+                    if ($installedVersions -notcontains $versionKey) {
+                        $installedVersions += $versionKey
+                        $allInstalledVersions += $versionKey
+                        $allVersionDetails[$versionKey] = @{
+                            Version = $cleanVersion
+                            Architecture = ""
+                            Path = ""
+                            IsDefault = $false
+                            Command = "python"  # Will use pyenv's python after setting local version
+                            Source = "pyenv"
+                            PyenvVersion = $cleanVersion
+                        }
+                    }
                 }
             }
             
-            if ($installedVersions.Count -eq 0) {
-                Write-Warning "No Python versions found in pyenv. Falling back to system Python."
-            } else {
-                Write-Host "`nAvailable Python versions (via pyenv):"
-                for ($i = 0; $i -lt $installedVersions.Count; $i++) {
-                    Write-Host "[$($i + 1)] $($installedVersions[$i])"
-                }
-                
-                do {
-                    $selection = Read-Host "`nSelect Python version (1-$($installedVersions.Count)) or press Enter for latest"
-                    
-                    if ([string]::IsNullOrWhiteSpace($selection)) {
-                        $selectedVersion = $installedVersions[0]  # Use first (usually latest)
-                        break
-                    }
-                    
-                    if ($selection -match '^\d+$') {
-                        $selectionNum = [int]$selection
-                        if (($selectionNum -ge 1) -and ($selectionNum -le $installedVersions.Count)) {
-                            $selectedVersion = $installedVersions[$selection - 1]
-                            break
-                        }
-                    }
-                    
-                    Write-Warning "Invalid selection. Please enter a number between 1 and $($installedVersions.Count)."
-                } while ($true)
-                
-                Write-Info "Setting local Python version to $selectedVersion"
-                try {
-                    & pyenv local $selectedVersion
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "Failed to set Python version"
-                    }
-                } catch {
-                    Write-ErrorMsg "Failed to set Python version: $_"
-                    exit 1
-                }
-                return "python"
-            }
+            Write-Info "Found $($installedVersions.Count) Python version(s) via pyenv"
         }
         catch {
-            Write-Warning "Error with pyenv: $_. Falling back to system Python."
+            Write-Warning "Error with pyenv: $_"
         }
+    }
+
+    # If we found versions from any source, present them all
+    if ($allInstalledVersions.Count -gt 0) {
+        # Sort versions by source, then by version
+        $allInstalledVersions = $allInstalledVersions | Sort-Object {
+            $details = $allVersionDetails[$_]
+            $sourceOrder = if ($details.Source -eq "Python Launcher") { 0 } else { 1 }
+            $versionParts = $details.Version -split '\.'
+            $majorMinor = [int]$versionParts[0] * 100 + [int]$versionParts[1]
+            "$sourceOrder-$(-$majorMinor)"  # Sort by source first, then version descending
+        }
+        
+        Write-Host "`nAvailable Python versions:"
+        for ($i = 0; $i -lt $allInstalledVersions.Count; $i++) {
+            $versionKey = $allInstalledVersions[$i]
+            $details = $allVersionDetails[$versionKey]
+            $defaultMarker = if ($details.IsDefault) { " (default)" } else { "" }
+            $archInfo = if ($details.Architecture) { " ($($details.Architecture)-bit)" } else { "" }
+            $pathInfo = if ($details.Path) { " - $($details.Path)" } else { "" }
+            Write-Host "[$($i + 1)] Python $($details.Version)$archInfo$defaultMarker - via $($details.Source)$pathInfo"
+        }
+        
+        do {
+            $selection = Read-Host "`nSelect Python version (1-$($allInstalledVersions.Count)) or press Enter for default"
+            
+            if ([string]::IsNullOrWhiteSpace($selection)) {
+                # Find default version or use first
+                $defaultVersion = $allInstalledVersions | Where-Object { $allVersionDetails[$_].IsDefault } | Select-Object -First 1
+                $selectedVersionKey = if ($defaultVersion) { $defaultVersion } else { $allInstalledVersions[0] }
+                break
+            }
+            
+            if ($selection -match '^\d+$') {
+                $selectionNum = [int]$selection
+                if (($selectionNum -ge 1) -and ($selectionNum -le $allInstalledVersions.Count)) {
+                    $selectedVersionKey = $allInstalledVersions[$selection - 1]
+                    break
+                }
+            }
+            
+            Write-Warning "Invalid selection. Please enter a number between 1 and $($allInstalledVersions.Count)."
+        } while ($true)
+        
+        $selectedDetails = $allVersionDetails[$selectedVersionKey]
+        
+        # Handle pyenv selection differently
+        if ($selectedDetails.Source -eq "pyenv") {
+            Write-Info "Setting local Python version to $($selectedDetails.PyenvVersion) via pyenv"
+            try {
+                & pyenv local $selectedDetails.PyenvVersion
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to set Python version"
+                }
+            } catch {
+                Write-ErrorMsg "Failed to set Python version: $_"
+                exit 1
+            }
+        }
+        
+        $archText = if ($selectedDetails.Architecture) { " ($($selectedDetails.Architecture)-bit)" } else { "" }
+        Write-Info "Using Python $($selectedDetails.Version)$archText via $($selectedDetails.Source)"
+        return $selectedDetails.Command
     }
     
     # Try system Python last
