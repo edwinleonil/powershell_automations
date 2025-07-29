@@ -1,12 +1,12 @@
 
-#Requires -Version 5.1
+# Requires -Version 5.1
 <#
 .SYNOPSIS
     Creates a Python virtual environment with VS Code integration.
 
 .DESCRIPTION
-    This script creates a Python virtual environment using either the pyenv tool (if available) 
-    or the system Python. It sets up VS Code settings and provides a robust, 
+    This script creates a Python virtual environment using either the pyenv tool(if available)
+    or the system Python. It sets up VS Code settings and provides a robust,
     user-friendly experience with comprehensive error handling.
 
 .PARAMETER Force
@@ -410,6 +410,20 @@ try {
     } catch {
         Write-ErrorMsg "Failed to create virtual environment: $_"
         exit 1
+    }
+    
+    # Upgrade pip to the latest version
+    Write-Info "Upgrading pip to the latest version..."
+    $pythonPath = ".\.venv\Scripts\python.exe"
+    try {
+        & $pythonPath -m pip install --upgrade pip
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upgrade pip"
+        }
+        Write-Info "pip upgraded successfully."
+    } catch {
+        Write-Warning "Failed to upgrade pip: $_"
+        Write-Warning "Continuing with existing pip version..."
     }
     
     # Create VS Code settings
